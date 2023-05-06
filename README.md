@@ -11,6 +11,6 @@ Copy `custom_components/lightwave` in your `custom_components` folder in the `co
 
 Restart HA.
 
-Consfigure as per [https://www.home-assistant.io/integrations/lightwave/].
+Configure as per [HA docs](https://www.home-assistant.io/integrations/lightwave/).
 
 

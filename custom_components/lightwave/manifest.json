@@ -1,0 +1,9 @@
+{
+  "domain": "lightwave",
+  "name": "Lightwave",
+  "documentation": "https://www.home-assistant.io/integrations/lightwave",
+  "codeowners": [],
+  "iot_class": "assumed_state",
+  "loggers": ["lightwave"],
+  "version": "1.0.0"
+}

@@ -1,7 +1,6 @@
 """Python library to provide reliable communication link with LightWaveRF lights and switches."""
 import asyncio
 import json
-import json
 import logging
 import socket
 import time
@@ -18,7 +17,7 @@ TX_PORT = 9760
 class LWLink:
     """LWLink provides a communication link with the LightwaveRF hub."""
 
-    SOCKET_TIMEOUT = 2.0
+    SOCKET_TIMEOUT = 2.00
 
     link_ip = None
     proxy_ip = None
@@ -26,7 +25,10 @@ class LWLink:
     transaction_id = cycle(range(1, 1000))
     the_queue = Queue()
     thread = None
-    data = {}
+    use_proxy = False
+    use_udp = False
+    trv_data = {}
+    trv_response = None
 
     def __init__(self, link_ip=None):
         """Initialise the component."""
@@ -87,10 +89,21 @@ class LWLink:
         """Set Lightwave TRV proxy ip/port."""
         self.proxy_ip = proxy_ip
         self.proxy_port = proxy_port
+        self.use_proxy = True
 
-    def read_trv_status(self, serial):
+    def read_trv_local(self, serial):
+        """Read Lightwave TRV status from local listener."""
+
+        if serial not in self.trv_data:
+            _LOGGER.debug("TRV Data not found: %s", serial)
+            return None
+
+        _LOGGER.debug("TRV Data Found: %s", serial)
+        return self.trv_data[serial]
+
+    def read_trv_proxy(self, serial):
         """Read Lightwave TRV status from the proxy."""
-        targ = temp = battery = trv_output = None
+        trv = None
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.settimeout(2.0)
@@ -98,18 +111,9 @@ class LWLink:
                 sock.sendto(msg, (self.proxy_ip, self.proxy_port))
                 response, dummy = sock.recvfrom(1024)
                 msg = response.decode()
-                j = json.loads(msg)
-                if "cTemp" in j.keys():
-                    temp = j["cTemp"]
-                if "cTarg" in j.keys():
-                    targ = j["cTarg"]
-                if "batt" in j.keys():
-                    # convert the voltage to a rough percentage
-                    battery = int((j["batt"] - 2.22) * 110)
-                if "output" in j.keys():
-                    trv_output = j["output"]
-                if "error" in j.keys():
-                    _LOGGER.warning("TRV proxy error: %s", j["error"])
+                trv = json.loads(msg)
+                if "error" in trv.keys():
+                    _LOGGER.warning("TRV proxy error: %s", trv["error"])
 
         except socket.timeout:
             _LOGGER.warning("TRV proxy not responing")
@@ -120,30 +124,28 @@ class LWLink:
         except json.JSONDecodeError:
             _LOGGER.warning("TRV proxy JSON error")
 
-        return (temp, targ, battery, trv_output)
+        return trv
 
-    def read_trv_status_local(self, serial):
-        """Read Lightwave TRV status from local listener."""
+    def read_trv_status(self, serial):
+        """Read Lightwave TRV status from the proxy."""
+        if self.use_proxy:
+            trv = self.read_trv_proxy(serial)
+        else:
+            trv = self.read_trv_local(serial)
 
         targ = temp = battery = trv_output = None
-
-        if serial not in self.data:
-            _LOGGER.debug("TRV Data not found: %s", serial)
+        if trv is None:
             return (temp, targ, battery, trv_output)
 
-        j = self.data[serial]
-
-        _LOGGER.debug("TRV Data Found: %s", serial)
-
-        if "cTemp" in j.keys():
-            temp = j["cTemp"]
-        if "cTarg" in j.keys():
-            targ = j["cTarg"]
-        if "batt" in j.keys():
+        if "cTemp" in trv.keys():
+            temp = trv["cTemp"]
+        if "cTarg" in trv.keys():
+            targ = trv["cTarg"]
+        if "batt" in trv.keys():
             # convert the voltage to a rough percentage
-            battery = int((j["batt"] - 2.22) * 110)
-        if "output" in j.keys():
-            trv_output = j["output"]
+            battery = int((trv["batt"] - 2.22) * 110)
+        if "output" in trv.keys():
+            trv_output = trv["output"]
 
         return (temp, targ, battery, trv_output)
 
@@ -152,10 +154,26 @@ class LWLink:
         while not LWLink.the_queue.empty():
             self._send_reliable_message(LWLink.the_queue.get_nowait())
 
+    def _check_response(self, response, trans_id):
+        """Check response fron lightwave"""
+
+        if "Not yet registered." in response:
+            _LOGGER.error("Not yet registered")
+            self.register()
+            return True
+
+        if response.startswith("%d,OK" % trans_id):
+            _LOGGER.debug("got OK")
+            return True
+
+        _LOGGER.error("error %s", response)
+
+        return False
+
     def _send_reliable_message(self, msg):
         """Send msg to LightwaveRF hub."""
         result = False
-        max_retries = 8
+        max_retries = 15
         trans_id = next(LWLink.transaction_id)
         msg = "%d,%s" % (trans_id, msg)
         err = None
@@ -166,37 +184,40 @@ class LWLink:
                 socket.AF_INET, socket.SOCK_DGRAM
             ) as read_sock:
                 write_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                read_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                read_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                read_sock.settimeout(self.SOCKET_TIMEOUT)
-                read_sock.bind(("0.0.0.0", RX_PORT))
+
+                if self.use_udp is False:
+                    read_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                    read_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    read_sock.settimeout(self.SOCKET_TIMEOUT)
+                    read_sock.bind(("0.0.0.0", RX_PORT))
+
                 while max_retries:
                     max_retries -= 1
+                    self.trv_response = None
                     write_sock.sendto(msg.encode("UTF-8"), (LWLink.link_ip, TX_PORT))
                     result = False
-                    while True:
-                        response, dummy = read_sock.recvfrom(1024)
-                        response = response.decode("UTF-8")
-                        if "Not yet registered." in response:
-                            _LOGGER.error("Not yet registered")
-                            self.register()
-                            result = True
-                            break
 
-                        if response.startswith("%d,OK" % trans_id):
-                            result = True
-                            break
-                        if response.startswith("%d,ERR" % trans_id):
-                            _LOGGER.info(response)
-                            err = response
-                            break
+                    if self.use_udp is True:
+                        time.sleep(1)
+                        response = self.trv_response
+                        if response is None:
+                            result = False
+                        else:
+                            result = self._check_response(response, trans_id)
 
-                        _LOGGER.debug(response)
+                    else:
+                        while True:
+                            response, dummy = read_sock.recvfrom(1024)
+                            response = response.decode("UTF-8")
+                            result = self._check_response(response, trans_id)
+                            if result:
+                                break
 
                     if result:
                         break
 
-                    time.sleep(0.25)
+                    if self.use_udp is False:
+                        time.sleep(0.25)
 
         except socket.timeout:
             _LOGGER.error("LW broker timeout!")
@@ -218,6 +239,7 @@ class LWLink:
     async def LW_listen(self):
         """Run the LW Proxy."""
         loop = asyncio.get_running_loop()
+        self.use_udp = True
 
         _LOGGER.info("Starting Lightwave UDP listener")
 
@@ -244,10 +266,12 @@ class TrvCollector:
         """Manage receipt of a UDP packet from Lightwave."""
         message = data.decode()
         stripped = message[2:]
-        data = json.loads(stripped)
+        try:
+            data = json.loads(stripped)
 
-        if "serial" in data.keys():
-            serial = data["serial"]
-            self.link.data[serial] = data
+            if "serial" in data.keys():
+                serial = data["serial"]
+                self.link.trv_data[serial] = data
 
-            _LOGGER.debug("TRV Broadcast from %s", serial)
+        except json.JSONDecodeError:
+            self.link.trv_response = message

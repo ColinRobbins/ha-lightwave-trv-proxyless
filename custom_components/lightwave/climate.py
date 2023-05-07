@@ -39,8 +39,6 @@ async def async_setup_platform(
 
     async_add_entities(entities)
 
-    await lwlink.LW_listen()
-
 
 class LightwaveTrv(ClimateEntity):
     """Representation of a LightWaveRF TRV."""
@@ -65,8 +63,7 @@ class LightwaveTrv(ClimateEntity):
 
     def update(self) -> None:
         """Communicate with a Lightwave RTF Proxy to get state."""
-        """Communicate with a Lightwave RTF Proxy to get state."""
-        (temp, targ, _, trv_output) = self._lwlink.read_trv_status_local(self._serial)
+        (temp, targ, _, trv_output) = self._lwlink.read_trv_status(self._serial)
         if temp is not None:
             self._attr_current_temperature = temp
         if targ is not None:

@@ -13,4 +13,6 @@ Restart HA.
 
 Configure as per [HA docs](https://www.home-assistant.io/integrations/lightwave/).
 
+To use proxyless mode, remove the proxy line from your config.
+
 
